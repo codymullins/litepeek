@@ -64,8 +64,8 @@
                          Mode="InputFileMode.SaveToTemporaryFolder"
                          Multiple="true"
                          MaximumFileCount="1"
-                         MaximumFileSize="@(10 * 1024 * 1024)"
-                         Accept=".sqlite"
+                         MaximumFileSize="10737418240"
+                         Accept=".sqlite, .db"
                          @bind-ProgressPercent="@progressPercent"
                          OnCompleted="@OnCompletedAsync"
                          Style="height: 300px; border: 1px dashed #eaeaea;">
