@@ -1,4 +1,5 @@
 ﻿@page "/"
+@using Litepeek.Models
 @using Microsoft.Data.Sqlite
 
 <PageTitle>Home</PageTitle>
@@ -86,21 +87,12 @@
 </FluentCard>
 
 @code {
-    int progressPercent = 0;
+    private int progressPercent = 0;
     private bool loaded;
     private TableData? selectedTable;
-    private IQueryable<List<object>> selectedTableRows;
-
-    public class TableData
-    {
-        public string TableName { get; set; }
-        public List<string> Columns { get; set; } = [];
-        public List<List<object>> Rows { get; set; } = [];
-    }
-
+    private IQueryable<List<object>> selectedTableRows = new List<List<object>>().AsQueryable();
     private List<TableData> tableDataList = [];
-
-    PaginationState pagination = new PaginationState { ItemsPerPage = 10 };
+    private PaginationState pagination = new() { ItemsPerPage = 10 };
 
     private async Task OnCompletedAsync(IEnumerable<FluentInputFileEventArgs> files)
     {
@@ -121,6 +113,11 @@
 
     private async Task HandleFileSelected(FluentInputFileEventArgs file)
     {
+        if (file.LocalFile is null)
+        {
+            return;
+        }
+        
         var buffer = new byte[file.Size];
 
         // Save the uploaded file to a temporary location
@@ -128,16 +125,16 @@
         await File.WriteAllBytesAsync(tempFilePath, buffer);
 
         // Open a connection to the SQLite database
-        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={file.LocalFile.FullName}"))
+        await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={file.LocalFile.FullName}"))
         {
             await connection.OpenAsync();
 
             // Discover the schema
             var tables = new List<string>();
-            using (var command = connection.CreateCommand())
+            await using (var command = connection.CreateCommand())
             {
                 command.CommandText = "SELECT name FROM sqlite_master WHERE type='table';";
-                using (var reader = await command.ExecuteReaderAsync())
+                await using (var reader = await command.ExecuteReaderAsync())
                 {
                     while (await reader.ReadAsync())
                     {
@@ -148,9 +145,11 @@
 
             foreach (var table in tables)
             {
-                var tableData = new TableData { TableName = table };
-
-                tableData.Columns = (await LoadColumns(connection, table)).Select(c => c.name).ToList();
+                var tableData = new TableData
+                {
+                    TableName = table,
+                    Columns = (await LoadColumns(connection, table)).Select(c => c.Name).ToList()
+                };
 
                 // Query the data
                 await using (var command = connection.CreateCommand())
@@ -175,7 +174,7 @@
         await InvokeAsync(StateHasChanged);
     }
 
-    private async Task<List<ColumnInfo>> LoadColumns(SqliteConnection connection, string table)
+    private static async Task<List<ColumnInfo>> LoadColumns(SqliteConnection connection, string table)
     {
         var columns = new List<ColumnInfo>();
         await using var command = connection.CreateCommand();
@@ -186,8 +185,8 @@
         {
             columns.Add(new()
             {
-                name = reader.GetString(1),
-                type = reader.GetString(2)
+                Name = reader.GetString(1),
+                Type = reader.GetString(2)
             });
         }
 
@@ -199,11 +198,4 @@
         selectedTable = table;
         selectedTableRows = table.Rows.AsQueryable();
     }
-
-    public class ColumnInfo
-    {
-        public string name { get; set; }
-        public string type { get; set; }
-    }
-
 }
