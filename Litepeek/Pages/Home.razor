@@ -1,0 +1,209 @@
+﻿@page "/"
+@using Microsoft.Data.Sqlite
+
+<PageTitle>Home</PageTitle>
+
+<h1>Litepeek</h1>
+<p>This SQLite viewer is built with Blazor. Your files are processed client-side.</p>
+<FluentCard Style="padding: 7px;">
+    @if (loaded)
+    {
+        <FluentSplitter Panel1Size="20%">
+            <Panel1>
+                <FluentTreeView>
+                    @foreach (var table in tableDataList)
+                    {
+                        <FluentTreeItem @onclick="() => SelectTable(table)">
+                            @table.TableName
+                        </FluentTreeItem>
+                    }
+                </FluentTreeView>
+            </Panel1>
+            <Panel2>
+                <div style="padding: 7px;">
+                    @if (selectedTable != null)
+                    {
+                        <h2>@selectedTable.TableName</h2>
+                        <div>
+                            Loaded @tableDataList.Sum(t => t.Rows.Count) rows
+                        </div>
+                        <FluentDataGrid
+                            AutoFit="false"
+                            HeaderCellAsButtonWithMenu="true"
+                            Items="@selectedTableRows"
+                            Pagination="pagination"
+                            ResizableColumns="true"
+                            ResizeType="DataGridResizeType.Discrete"
+                            Style="height: 405px;overflow:auto;">
+                            @foreach (var column in selectedTable.Columns)
+                            {
+                                <PropertyColumn Property="@(row => row[selectedTable.Columns.IndexOf(column)])" Width="160px" Sortable="true" Title="@column"/>
+                            }
+                        </FluentDataGrid>
+                        <div>
+                            <FluentPaginator Style="width: 50%" State="@pagination"/>
+                        </div>
+                    }
+                    else
+                    {
+                        <p>Select a table to view its data</p>
+                    }
+                </div>
+            </Panel2>
+        </FluentSplitter>
+    }
+    else
+    {
+        <p>Upload a SQLite database file to view its contents</p>
+    }
+
+    @if (!loaded)
+    {
+        <FluentInputFile Id="my-file-uploader"
+                         Mode="InputFileMode.SaveToTemporaryFolder"
+                         Multiple="true"
+                         MaximumFileCount="1"
+                         MaximumFileSize="@(10 * 1024 * 1024)"
+                         Accept=".sqlite"
+                         @bind-ProgressPercent="@progressPercent"
+                         OnCompleted="@OnCompletedAsync"
+                         Style="height: 300px; border: 1px dashed #eaeaea;">
+            <ChildContent>
+                <label for="my-file-uploader">
+                    <FluentIcon Value="@(new @Icons.Regular.Size24.ArrowUpload())"/>
+                </label>
+
+                <div>
+                    Drag .sqlite files here you wish to upload,
+                    or <label for="my-file-uploader">browse</label>
+                    for them<span style="color: red;">*</span>.
+                    <br/>
+                    <em>Maximum of 1 file allowed.</em>
+                </div>
+            </ChildContent>
+        </FluentInputFile>
+    }
+</FluentCard>
+
+@code {
+    int progressPercent = 0;
+    private bool loaded;
+    private TableData? selectedTable;
+    private IQueryable<List<object>> selectedTableRows;
+
+    public class TableData
+    {
+        public string TableName { get; set; }
+        public List<string> Columns { get; set; } = [];
+        public List<List<object>> Rows { get; set; } = [];
+    }
+
+    private List<TableData> tableDataList = [];
+
+    PaginationState pagination = new PaginationState { ItemsPerPage = 10 };
+
+    private async Task OnCompletedAsync(IEnumerable<FluentInputFileEventArgs> files)
+    {
+        var fluentInputFileEventArgsEnumerable = files.ToList();
+        if (fluentInputFileEventArgsEnumerable.Count() > 1)
+        {
+            // For the demo, only allow one file to be uploaded.
+            return;
+        }
+
+        var file = fluentInputFileEventArgsEnumerable.Single();
+        await HandleFileSelected(file);
+        
+        // Wait 3 seconds before to reset the progress bar.
+        await Task.Delay(3000);
+        progressPercent = 0;
+    }
+
+    private async Task HandleFileSelected(FluentInputFileEventArgs file)
+    {
+        var buffer = new byte[file.Size];
+
+        // Save the uploaded file to a temporary location
+        var tempFilePath = Path.Combine(Path.GetTempPath(), file.Name);
+        await File.WriteAllBytesAsync(tempFilePath, buffer);
+
+        // Open a connection to the SQLite database
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={file.LocalFile.FullName}"))
+        {
+            await connection.OpenAsync();
+
+            // Discover the schema
+            var tables = new List<string>();
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "SELECT name FROM sqlite_master WHERE type='table';";
+                using (var reader = await command.ExecuteReaderAsync())
+                {
+                    while (await reader.ReadAsync())
+                    {
+                        tables.Add(reader.GetString(0));
+                    }
+                }
+            }
+
+            foreach (var table in tables)
+            {
+                var tableData = new TableData { TableName = table };
+
+                tableData.Columns = (await LoadColumns(connection, table)).Select(c => c.name).ToList();
+
+                // Query the data
+                await using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = $"SELECT * FROM {table};";
+                    await using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            var row = new object[reader.FieldCount];
+                            reader.GetValues(row);
+                            tableData.Rows.Add(row.ToList());
+                        }
+                    }
+                }
+
+                tableDataList.Add(tableData);
+            }
+        }
+
+        loaded = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task<List<ColumnInfo>> LoadColumns(SqliteConnection connection, string table)
+    {
+        var columns = new List<ColumnInfo>();
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({table});";
+        await using var reader = await command.ExecuteReaderAsync();
+        
+        while (await reader.ReadAsync())
+        {
+            columns.Add(new()
+            {
+                name = reader.GetString(1),
+                type = reader.GetString(2)
+            });
+        }
+
+        return columns;
+    }
+    
+    private void SelectTable(TableData table)
+    {
+        selectedTable = table;
+        selectedTableRows = table.Rows.AsQueryable();
+    }
+
+    public class ColumnInfo
+    {
+        public string name { get; set; }
+        public string type { get; set; }
+    }
+
+}
